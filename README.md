@@ -1,2 +1,2 @@
 # TSA-2025
-Repository for my GATSA SLC 2025 submersion
+Repository for my GATSA SLC 2025 submission
