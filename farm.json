@@ -1,0 +1,17 @@
+{
+	"name" : "UNAMED FARM",
+	"plots" : 
+	[
+		{
+			"crop" : "NO SELECTION",
+			"cropIndex" : 0,
+			"deviation" : 0.0,
+			"height" : 50,
+			"name" : "Plot 1",
+			"width" : 50,
+			"x" : 454,
+			"y" : 225
+		}
+	],
+	"size" : 1
+}

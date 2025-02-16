@@ -1,31 +1,50 @@
+/*
+ *  plot.cpp - farm plot management and rendering code
+ *  written for GATSA's SLC '25 Software Development event
+*/
+
 #include <SDL2/SDL.h>
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_sdl2.h"
 #include "imgui/imgui_impl_sdlrenderer2.h"
 #include "main.hpp"
 
-Plot::Plot(int x, int y, int size, SDL_Color color) {
-    this->bounds = (SDL_Rect){x, y, size, size};
-    this->color = color;
+// plot constructor, takes in crop, size, and design information
+Plot::Plot(int x, int y, int width, int height, std::string name, int cropIndex, double cropDeviation, CropRegistry::CropEntry* crop) {
+    this->bounds = (SDL_Rect){x, y, width, height};
+    this->windowOpen = false;
 
-    this->crop = std::string("Wheat");
+    // copy name over into char buffer for imgui input
+    memset(this->plotName, 0, sizeof(this->plotName));
+    strcpy(this->plotName, name.c_str());
+
+    // get crop information from registry field
+    this->cropName = crop->name;
+    this->cropIndex = cropIndex;
+    this->expectedYield = crop->avgYield;
+    this->yieldDeviance = cropDeviation;
+    this->color = crop->color;
 }
 
 void Plot::render(SDL_Renderer* renderer) {
-    // draw the outline of the plot
-    if (((int) this->mouseState >= 6) && ((int) this->mouseState <= 10)) {
+    // draw the outline of the plot different colors based on selection/hovering
+    if (this->isSelected()) {
+        // almost white
         SDL_SetRenderDrawColor(renderer, 0xD0, 0xD0, 0xD0, 0xFF);
-    } else if (((int) this->mouseState >= 1) && ((int) this->mouseState <= 5)) {
+    } else if (this->isHovered()) {
+        // light gray
         SDL_SetRenderDrawColor(renderer, 0x80, 0x80, 0x80, 0xFF);
     } else {
+        // dark gray
         SDL_SetRenderDrawColor(renderer, 0x40, 0x40, 0x40, 0xFF);
     }
 
+    // draw the bounding box
     SDL_RenderDrawRect(renderer, &this->bounds);
 
     // set rendering color to color of plot
     SDL_SetRenderDrawColor(renderer, this->color.r, this->color.g, this->color.b, this->color.a);
-    // calculate rendering offsets for calcs
+    // calculate rendering offsets
     int offx = this->bounds.x + PLOT_PADDING;
     int offy = this->bounds.y + PLOT_PADDING;
     int effectiveWidth = this->bounds.w - (PLOT_PADDING * 2);
@@ -33,21 +52,24 @@ void Plot::render(SDL_Renderer* renderer) {
     int largestBound = effectiveWidth > effectiveHeight ? effectiveWidth : effectiveHeight;
     int partitions = largestBound / PLOT_LINE_SPACING;
     
+    // create render texture for rendering
     SDL_Texture* renderTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
         effectiveWidth * 2, effectiveHeight * 2);
+    // target the created texture
     SDL_SetRenderTarget(renderer, renderTexture);
 
-    // split width into segments and draw lines
+    // split width into segments and draw lines diagonally
     for (int i = 0; i <= partitions * 2; i++) {
         SDL_Point start = {0, i * PLOT_LINE_SPACING};
-
         SDL_Point end = {i * (PLOT_LINE_SPACING), 0};
-        
+    
         SDL_RenderDrawLine(renderer, start.x, start.y, end.x, end.y);
     }
 
+    // set render target back to main window
     SDL_SetRenderTarget(renderer, NULL);
 
+    // render our plot onto the screen
     SDL_Rect src = {0, 0, effectiveWidth, effectiveHeight};
     SDL_Rect dst = {offx, offy, effectiveWidth, effectiveHeight};
     SDL_RenderCopy(renderer, renderTexture, &src, &dst);
@@ -57,28 +79,58 @@ void Plot::render(SDL_Renderer* renderer) {
     SDL_RenderDrawRect(renderer, &this->tmp);
 }
 
-// returns a bool indicating if the plot needs updating
-void Plot::update(SDL_Point* mouse, SDL_Point* deltaMouse, std::vector<Plot*>& list) {
-    this->mouse = *mouse;
-    this->deltaMouse = *deltaMouse;
-    this->renderTooltip = false;
-
+// update the plot when its not selected, can optionally ignore all mouse input
+void Plot::updateNonSelected(bool forceNoUpdate) {
     this->previousMouse = this->currentMouse;
-    this->currentMouse = SDL_GetMouseState(NULL, NULL);
+    this->currentMouse = SDL_GetMouseState(&this->mouse.x, &this->mouse.y);
 
-    this->mouseState = this->updateMouseState();
-    if (this->mouseState != MouseState::OUT_OF_BOUNDS) {
-        this->updatePosition(list);
-    } 
-
-    if (SDL_PointInRect(mouse, &this->bounds)) {
-        this->renderTooltip = true;
+    // force mouse input to be ignored
+    if (forceNoUpdate) {
+        this->currentMouse = 0;
+        this->mouse = (SDL_Point){0, 0};
     }
 }
 
-bool Plot::checkCollisions(Plot* plot, std::vector<Plot*>& list) {
-    for (Plot* p : list) {
-        if ((p != plot) && SDL_HasIntersection(&plot->bounds, &p->bounds)) {
+// returns true/false based on if a right click was in the plots bounds
+bool Plot::registerClick(const SDL_Point* p) {
+    if (SDL_PointInRect(p, &this->bounds)) {
+        // toggle window being open
+        this->windowOpen = !this->windowOpen;
+        this->windowPos = *p;
+        return true;
+    }
+
+    return false;
+}
+
+bool Plot::update() {
+    // update the basic fields
+    this->updateNonSelected(false);
+
+    // return if the plot is in focus
+    return this->isSelected() || this->isHovered();
+}
+
+// returns true if the plot is being held with left click
+bool Plot::isSelected() {
+    return (SDL_PointInRect(&this->mouse, &this->bounds) && (this->currentMouse & SDL_BUTTON_LMASK));
+}
+
+// retruns true if plot contains mouse
+bool Plot::isHovered() {
+    return (SDL_PointInRect(&this->mouse, &this->bounds));
+}
+
+// returns true if any point is in bounding box
+bool Plot::inBounds(const SDL_Point* p) {
+    return SDL_PointInRect(p, &this->bounds);
+}
+
+// checks for bounding box collisions with other plots
+bool Plot::checkCollisions(std::vector<Plot*>& list) {
+    for (auto& p : list) {
+        // ignore itself in the check
+        if ((p != this) && SDL_HasIntersection(&this->bounds, &p->bounds)) {
             return true;
         }
     }
@@ -86,112 +138,80 @@ bool Plot::checkCollisions(Plot* plot, std::vector<Plot*>& list) {
     return false;
 }
 
-void Plot::updatePosition(std::vector<Plot*>& plots) {
+// update the plots position
+void Plot::updatePosition(SDL_Point* deltaMouse, std::vector<Plot*>& plots) {
+    // save last locations
     int lastx = this->bounds.x;
     int lasty = this->bounds.y;
 
-    switch (this->mouseState) {
-        case MouseState::SELECTED_CENTER:
-            this->move(this->deltaMouse.x, this->deltaMouse.y);
-            break;
-        case MouseState::SELECTED_TOP:
-            this->move(0, this->deltaMouse.y);
-            this->resize(0, -this->deltaMouse.y);
-            this->bounds.h = this->bounds.h < PLOT_MIN_HEIGHT ? PLOT_MIN_HEIGHT : this->bounds.h;
-            break;
-        case MouseState::SELECTED_BOTTOM:
-            this->resize(0, this->deltaMouse.y);
-            this->bounds.h = this->bounds.h < PLOT_MIN_HEIGHT ? PLOT_MIN_HEIGHT : this->bounds.h;
-            break;
-        case MouseState::SELECTED_LEFT:
-            this->move(this->deltaMouse.x, 0);
-            this->resize(-this->deltaMouse.x, 0);
-            this->bounds.w = this->bounds.w < PLOT_MIN_WIDTH ? PLOT_MIN_WIDTH : this->bounds.w;
-            break;
-        case MouseState::SELECTED_RIGHT:
-            this->resize(this->deltaMouse.x, 0);
-            this->bounds.w = this->bounds.w < PLOT_MIN_WIDTH ? PLOT_MIN_WIDTH : this->bounds.w;
-            break;
+    // try moving
+    this->move(deltaMouse->x, deltaMouse->y);
+
+    // if touching other plots then reset position
+    if (this->checkCollisions(plots)) {
+        this->bounds.x = lastx;
+        this->bounds.y = lasty;
     }
 
-    if (this->checkCollisions(this, plots)) {
+    // if out of screen
+    if (this->bounds.x < 0 || this->bounds.x > WINDOW_WIDTH - this->bounds.w) {
         this->bounds.x = lastx;
+    }
+
+    if (this->bounds.y < 0 || this->bounds.y > WINDOW_HEIGHT - this->bounds.h) {
         this->bounds.y = lasty;
     }
 }
 
+// updates the plots position from the gui inputs, instead of mouse dragging
+void Plot::updateFromInputs(int xin, int yin, int win, int hin, std::vector<Plot*>& plots) {
+    // update left-right position
+    if (xin != this->bounds.x) {
+        int oldx = this->bounds.x;
+        this->bounds.x = xin;
+        if (this->checkCollisions(plots)) {
+            this->bounds.x = oldx;
+        }
+    }
+
+    // update up-down position
+    if (yin != this->bounds.y) {
+        int oldy = this->bounds.y;
+        this->bounds.y = yin;
+        if (this->checkCollisions(plots)) {
+            this->bounds.y = oldy;
+        }
+    }
+
+    // update the width
+    if (win != this->bounds.w) {
+        int oldw = this->bounds.w;
+        this->bounds.w = win;
+        if (this->checkCollisions(plots)) {
+            this->bounds.w = oldw;
+        }
+    }
+
+    // update the height
+    if (hin != this->bounds.h) {
+        int oldh = this->bounds.h;
+        this->bounds.h = hin;
+        if (this->checkCollisions(plots)) {
+            this->bounds.h = oldh;
+        }
+    }
+}
+
+// resets all the plot's properties based on a new crop selection
+void Plot::updateProperties(CropRegistry::CropEntry* entry, int index) {
+    this->cropName = entry->name;
+    this->cropIndex = index;
+    this->expectedYield = entry->avgYield;
+    this->color = entry->color;
+}
+
+// moves the plot
 void Plot::move(int deltaX, int deltaY) {
     this->bounds.x += deltaX;
     this->bounds.y += deltaY;
-}
-
-void Plot::resize(int deltaWidth, int deltaHeight) {
-    this->bounds.w += deltaWidth;
-    this->bounds.w = (this->bounds.w < PLOT_MIN_WIDTH) ? (PLOT_MIN_WIDTH) : (this->bounds.w);
-    this->bounds.h += deltaHeight;
-    this->bounds.h = (this->bounds.h < PLOT_MIN_HEIGHT) ? (PLOT_MIN_HEIGHT) : (this->bounds.h);
-}
-
-// VERY IMPORTANT!!!
-// this function returns which region of the plot the mouse is in
-MouseState Plot::updateMouseState() {
-    /*
-        NOTE: the collision rectangles are in clockwise order starting from the top side
-        this HAS to be the same as the enum, otherwise the whole application will break
-    */
-
-    // since the updating rates between the mouse and sdl have different timings, the mouse delta
-    // will always be less than what it really is
-    // so, if the current mouse state is being held, skip collision detection, and just return the same
-    if (this->mouseState >= MouseState::SELECTED_TOP && this->mouseState <= MouseState::SELECTED_CENTER) {
-        if ((this->currentMouse & SDL_BUTTON_LMASK) && (this->previousMouse & SDL_BUTTON_LMASK)) {
-            return this->mouseState;
-        }
-    }
-
-    SDL_Rect rects[5] = {
-        // collision rect for resizing the top side
-        (SDL_Rect) {this->bounds.x, this->bounds.y - RESIZE_TOLERANCE, this->bounds.w, RESIZE_TOLERANCE * 2},
-        // collision rect for resizing the right side
-        (SDL_Rect) {this->bounds.x + this->bounds.w - RESIZE_TOLERANCE, this->bounds.y, RESIZE_TOLERANCE * 2, this->bounds.h},
-        // collision rect for resizing bottom side
-        (SDL_Rect) {this->bounds.x, this->bounds.y + this->bounds.h - RESIZE_TOLERANCE, this->bounds.w, RESIZE_TOLERANCE * 2},
-        // collision rect for resizing left side
-        (SDL_Rect) {this->bounds.x - RESIZE_TOLERANCE, this->bounds.y, RESIZE_TOLERANCE * 2, this->bounds.h},
-        // collision rect for center of plot
-        (SDL_Rect) {this->bounds.x + RESIZE_TOLERANCE, this->bounds.y + RESIZE_TOLERANCE, this->bounds.w - (RESIZE_TOLERANCE * 2), this->bounds.h - (RESIZE_TOLERANCE * 2)}
-    };
-
-    bool clicked = this->currentMouse & SDL_BUTTON_LMASK;
-
-    for (int i = 0; i < 5; i++) {
-        if (SDL_PointInRect(&this->mouse, &rects[i])) {
-            // returns the appropriate mouse state
-            // check enum for more info
-            this->tmp = rects[i];
-            return (MouseState) (i + (clicked ? 5 : 0));
-        }
-    }
-
-    this->tmp = (SDL_Rect){0, 0, 1, 1,};
-    return MouseState::OUT_OF_BOUNDS;
-}
-
-const char* Plot::stateAsString() {
-    if (this->mouseState == MouseState::OUT_OF_BOUNDS) {
-        return "MouseState::OUT_OF_BOUNDS";
-    }
-
-    return (const char*[]) {
-        "MouseState::HOVERED_TOP",
-        "MouseState::HOVERED_RIGHT",
-        "MouseState::HOVERED_BOTTOM",
-        "MouseState::HOVERED_LEFT",
-        "MouseState::HOVERED_CENTER",
-        "MouseState::SELECTED_TOP",
-        "MouseState::SELECTED_RIGHT",
-        "MouseState::SELECTED_BOTTOM",
-        "MouseState::SELECTED_LEFT",
-        "MouseState::SELECTED_CENTER",
-    }[(int) this->mouseState];
 }

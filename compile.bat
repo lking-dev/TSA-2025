@@ -14,7 +14,7 @@ cmd /c if exist main.exe del /F main.exe
 :: .
 :: > Compiling program
 :: --------------------------
-g++ -o main.exe lib/imgui.o ./src/*.cpp -mconsole -v -s -O3 -I%INCLUDE_DIR% -L%LIB_DIR% -lmingw32 -lSDL2main -lSDL2 -lkernel32 -lwinmm -lgdi32
+g++ -o main.exe lib/imgui.o lib/jsoncpp.o ./src/*.cpp -mconsole -v -s -O3 -I%INCLUDE_DIR% -L%LIB_DIR% -lmingw32 -lSDL2main -lSDL2 -lkernel32 -lwinmm -lgdi32
 :: .
 :: > Executing program
 :: -------------------------
